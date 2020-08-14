@@ -88,8 +88,9 @@ export interface ConsumerOptions {
   sqs?: SQS;
   region?: string;
   handleMessageTimeout?: number;
-  handleMessage?(message: SQSMessage): Promise<void>;
-  handleMessageBatch?(messages: SQSMessage[]): Promise<void>;
+  handleMessage?(message: SQSMessage, deleteMessage?: () => Promise<void>): Promise<void>;
+  handleMessageBatch?(messages: SQSMessage[], deleteMessages?: () => Promise<void>): Promise<void>;
+  manualDelete?: boolean;
 }
 
 interface Events {
@@ -105,8 +106,8 @@ interface Events {
 
 export class Consumer extends EventEmitter {
   private queueUrl: string;
-  private handleMessage: (message: SQSMessage) => Promise<void>;
-  private handleMessageBatch: (message: SQSMessage[]) => Promise<void>;
+  private handleMessage: (message: SQSMessage, deleteMessage?: () => Promise<void>) => Promise<void>;
+  private handleMessageBatch: (message: SQSMessage[], deleteMessages?: () => Promise<void>) => Promise<void>;
   private handleMessageTimeout: number;
   private attributeNames: string[];
   private messageAttributeNames: string[];
@@ -119,6 +120,7 @@ export class Consumer extends EventEmitter {
   private terminateVisibilityTimeout: boolean;
   private heartbeatInterval: number;
   private sqs: SQS;
+  private manualDelete: boolean;
 
   constructor(options: ConsumerOptions) {
     super();
@@ -137,6 +139,7 @@ export class Consumer extends EventEmitter {
     this.waitTimeSeconds = options.waitTimeSeconds || 20;
     this.authenticationErrorTimeout = options.authenticationErrorTimeout || 10000;
     this.pollingWaitTimeMs = options.pollingWaitTimeMs || 0;
+    this.manualDelete = options.manualDelete || false;
 
     this.sqs = options.sqs || new SQS({
       region: options.region || process.env.AWS_REGION || 'eu-west-1'
@@ -207,8 +210,13 @@ export class Consumer extends EventEmitter {
           return this.changeVisabilityTimeout(message, elapsedSeconds + this.visibilityTimeout);
         });
       }
-      await this.executeHandler(message);
-      await this.deleteMessage(message);
+      const deleteMessage = async () => {
+        await this.deleteMessage(message);
+      };
+      await this.executeHandler(message, this.manualDelete ? deleteMessage : undefined);
+      if (!this.manualDelete) {
+        await deleteMessage();
+      }
       this.emit('message_processed', message);
     } catch (err) {
       this.emitError(err, message);
@@ -248,18 +256,18 @@ export class Consumer extends EventEmitter {
     }
   }
 
-  private async executeHandler(message: SQSMessage): Promise<void> {
+  private async executeHandler(message: SQSMessage, deleteMessage?: () => Promise<void>): Promise<void> {
     let timeout;
     let pending;
     try {
       if (this.handleMessageTimeout) {
         [timeout, pending] = createTimeout(this.handleMessageTimeout);
         await Promise.race([
-          this.handleMessage(message),
+          this.handleMessage(message, deleteMessage),
           pending
         ]);
       } else {
-        await this.handleMessage(message);
+        await this.handleMessage(message, deleteMessage);
       }
     } catch (err) {
       if (err instanceof TimeoutError) {
@@ -342,8 +350,13 @@ export class Consumer extends EventEmitter {
           return this.changeVisabilityTimeoutBatch(messages, elapsedSeconds + this.visibilityTimeout);
         });
       }
-      await this.executeBatchHandler(messages);
-      await this.deleteMessageBatch(messages);
+      const deleteMessages = async () => {
+        await this.deleteMessageBatch(messages);
+      };
+      await this.executeBatchHandler(messages, this.manualDelete ? deleteMessages : undefined);
+      if (!this.manualDelete) {
+        await deleteMessages();
+      }
       messages.forEach((message) => {
         this.emit('message_processed', message);
       });
@@ -378,9 +391,9 @@ export class Consumer extends EventEmitter {
     }
   }
 
-  private async executeBatchHandler(messages: SQSMessage[]): Promise<void> {
+  private async executeBatchHandler(messages: SQSMessage[], deleteMessages?: () => Promise<void>): Promise<void> {
     try {
-      await this.handleMessageBatch(messages);
+      await this.handleMessageBatch(messages, deleteMessages);
     } catch (err) {
       err.message = `Unexpected message handler failure: ${err.message}`;
       throw err;
