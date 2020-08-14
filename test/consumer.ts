@@ -237,6 +237,8 @@ describe('Consumer', () => {
         region: 'some-region',
         handleMessage: async (_, callback) => {
           assert.exists(callback);
+          sandbox.assert.notCalled(sqs.deleteMessage);
+          callback();
         },
         manualDelete: true,
         sqs
@@ -246,7 +248,7 @@ describe('Consumer', () => {
       await pEvent(consumer, 'message_processed');
       consumer.stop();
 
-      sandbox.assert.notCalled(sqs.deleteMessage);
+      sandbox.assert.called(sqs.deleteMessage);
     });
 
     it('should not deleteMessage when manualDelete is set for handleMessageBatch', async () => {
@@ -255,6 +257,8 @@ describe('Consumer', () => {
         region: 'some-region',
         handleMessageBatch: async (_, callback) => {
           assert.exists(callback);
+          sandbox.assert.notCalled(sqs.deleteMessageBatch);
+          callback();
         },
         manualDelete: true,
         sqs
@@ -264,7 +268,7 @@ describe('Consumer', () => {
       await pEvent(consumer, 'message_processed');
       consumer.stop();
 
-      sandbox.assert.notCalled(sqs.deleteMessageBatch);
+      sandbox.assert.called(sqs.deleteMessageBatch);
     });
 
     it('fires an error event when an error occurs deleting a message', async () => {

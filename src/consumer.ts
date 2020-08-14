@@ -212,12 +212,12 @@ export class Consumer extends EventEmitter {
       }
       const deleteMessage = async () => {
         await this.deleteMessage(message);
+        this.emit('message_processed', message);
       };
       await this.executeHandler(message, this.manualDelete ? deleteMessage : undefined);
       if (!this.manualDelete) {
         await deleteMessage();
       }
-      this.emit('message_processed', message);
     } catch (err) {
       this.emitError(err, message);
 
@@ -352,14 +352,14 @@ export class Consumer extends EventEmitter {
       }
       const deleteMessages = async () => {
         await this.deleteMessageBatch(messages);
+        messages.forEach((message) => {
+          this.emit('message_processed', message);
+        });
       };
       await this.executeBatchHandler(messages, this.manualDelete ? deleteMessages : undefined);
       if (!this.manualDelete) {
         await deleteMessages();
       }
-      messages.forEach((message) => {
-        this.emit('message_processed', message);
-      });
     } catch (err) {
       this.emit('error', err, messages);
 
