@@ -231,6 +231,46 @@ describe('Consumer', () => {
       assert.equal(err.message, 'Unexpected message handler failure: unexpected parsing error');
     });
 
+    it('should not deleteMessage when manualDelete is set for handleMessage', async () => {
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        region: 'some-region',
+        handleMessage: async (_, callback) => {
+          assert.exists(callback);
+          sandbox.assert.notCalled(sqs.deleteMessage);
+          callback();
+        },
+        manualDelete: true,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'message_processed');
+      consumer.stop();
+
+      sandbox.assert.called(sqs.deleteMessage);
+    });
+
+    it('should not deleteMessage when manualDelete is set for handleMessageBatch', async () => {
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        region: 'some-region',
+        handleMessageBatch: async (_, callback) => {
+          assert.exists(callback);
+          sandbox.assert.notCalled(sqs.deleteMessageBatch);
+          callback();
+        },
+        manualDelete: true,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'message_processed');
+      consumer.stop();
+
+      sandbox.assert.called(sqs.deleteMessageBatch);
+    });
+
     it('fires an error event when an error occurs deleting a message', async () => {
       const deleteErr = new Error('Delete error');
 
