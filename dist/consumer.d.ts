@@ -2,6 +2,12 @@
 import * as SQS from 'aws-sdk/clients/sqs';
 import { EventEmitter } from 'events';
 export declare type SQSMessage = SQS.Types.Message;
+interface Releaser {
+    (): void;
+}
+export interface Semaphore {
+    acquire: () => Promise<[number, Releaser]>;
+}
 export interface ConsumerOptions {
     queueUrl?: string;
     attributeNames?: string[];
@@ -19,11 +25,14 @@ export interface ConsumerOptions {
     handleMessageTimeout?: number;
     handleMessage?(message: SQSMessage, deleteMessage?: () => Promise<void>): Promise<void>;
     handleMessageBatch?(messages: SQSMessage[], deleteMessages?: () => Promise<void>): Promise<void>;
+    semaphore?: Semaphore;
     manualDelete?: boolean;
 }
 interface Events {
     'response_processed': [];
     'empty': [];
+    'semaphore_acquire': [];
+    'semaphore_release': [];
     'message_received': [SQSMessage];
     'message_processed': [SQSMessage];
     'error': [Error, void | SQSMessage | SQSMessage[]];
@@ -35,6 +44,7 @@ export declare class Consumer extends EventEmitter {
     private queueUrl;
     private handleMessage;
     private handleMessageBatch;
+    private semaphore;
     private handleMessageTimeout;
     private attributeNames;
     private messageAttributeNames;

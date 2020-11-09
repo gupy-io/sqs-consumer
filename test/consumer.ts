@@ -41,6 +41,8 @@ describe('Consumer', () => {
   let clock;
   let handleMessage;
   let handleMessageBatch;
+  let semaphore;
+  let semaphoreRelease;
   let sqs;
   const response = {
     Messages: [{
@@ -54,6 +56,9 @@ describe('Consumer', () => {
     clock = sinon.useFakeTimers();
     handleMessage = sandbox.stub().resolves(null);
     handleMessageBatch = sandbox.stub().resolves(null);
+    semaphoreRelease = sandbox.stub().returns(null);
+    semaphore = sandbox.mock();
+    semaphore.acquire = sandbox.stub().resolves([0, semaphoreRelease]);
     sqs = sandbox.mock();
     sqs.receiveMessage = stubResolve(response);
     sqs.deleteMessage = stubResolve();
@@ -661,6 +666,47 @@ describe('Consumer', () => {
       sandbox.assert.callCount(handleMessageBatch, 1);
       sandbox.assert.callCount(handleMessage, 0);
 
+    });
+
+    it('uses semaphore when configured to', async () => {
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage,
+        semaphore,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'response_processed');
+      await pEvent(consumer, 'semaphore_release');
+      consumer.stop();
+
+      sandbox.assert.callCount(semaphore.acquire, 1);
+      sandbox.assert.callCount(handleMessage, 1);
+      sandbox.assert.callCount(semaphoreRelease, 1);
+    });
+
+    it('releases semaphore in failure cases', async () => {
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage: () => {
+          throw new Error('handle error');
+        },
+        semaphore,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'processing_error');
+      await pEvent(consumer, 'semaphore_release');
+      consumer.stop();
+
+      sandbox.assert.callCount(semaphore.acquire, 1);
+      sandbox.assert.callCount(semaphoreRelease, 1);
     });
 
     it('extends visibility timeout for long running handler functions', async () => {
