@@ -363,8 +363,9 @@ export class Consumer extends EventEmitter {
               this.emit('semaphore_release');
               this.emit('error', err);
             });
-        }
-        );
+        }).catch((err)=> {
+          this.emit('error', err);
+        });
     } else {
       receiveAndHandleFlow()
         .then(() => {

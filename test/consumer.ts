@@ -709,6 +709,26 @@ describe('Consumer', () => {
       sandbox.assert.callCount(semaphoreRelease, 1);
     });
 
+    it('emits error if semaphore.acquire fails', async () => {
+      semaphore.acquire = sinon.stub().rejects('semaphore acquire error');
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage,
+        semaphore,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'error');
+      consumer.stop();
+
+      sandbox.assert.callCount(semaphore.acquire, 1);
+      sandbox.assert.callCount(semaphoreRelease, 0);
+      sandbox.assert.callCount(handleMessage, 0);
+    });
+
     it('extends visibility timeout for long running handler functions', async () => {
       consumer = new Consumer({
         queueUrl: 'some-queue-url',
