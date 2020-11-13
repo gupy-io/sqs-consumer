@@ -20,27 +20,20 @@ interface TestResolveWithReleaser {
 const TestSemaphore = class {
   public capacity: number;
   public count: number;
-  public acquireCount: number;
-  public releaseCount: number;
-  public notReadyCount: number;
+
   constructor(capacity: number) {
     this.capacity = capacity;
     this.count = 0;
-    this.acquireCount = 0;
-    this.releaseCount = 0;
-    this.notReadyCount = 0;
   }
 
   private resolveReleaser(sem: any, resolve: TestResolveWithReleaser): void {
     if (sem.count >= sem.capacity) {
-      sem.notReadyCount += 1;
       setTimeout(sem.resolveReleaser, 5, sem, resolve);
       return;
     }
 
     sem.count += 1;
     function release() {
-      sem.releaseCount += 1;
       sem.count -= 1;
     }
 
@@ -48,7 +41,6 @@ const TestSemaphore = class {
   }
 
   public acquire(): Promise<[number, TestReleaser]> {
-    this.acquireCount += 1;
     return new Promise((resolve) => {
       this.resolveReleaser(this, resolve);
     });
@@ -776,22 +768,14 @@ describe('Consumer', () => {
     });
 
     it('respects semaphore capacity', async () => {
-      const expectedAcquireCount = 16;
-      const expectedHandleMessageCount = 15;
-      const expectedReleaseCount = 10;
-      const expectesNotReadCount = 118;
       const semaphoreCapacity = 5;
-      let handleMessageCount = 0;
       const testSem = new TestSemaphore(semaphoreCapacity);
 
       consumer = new Consumer({
         queueUrl: 'some-queue-url',
         messageAttributeNames: ['attribute-1', 'attribute-2'],
         region: 'some-region',
-        handleMessage: () => new Promise((resolve) => {
-          handleMessageCount += 1;
-          setTimeout(resolve, 200);
-        }),
+        handleMessage: () => new Promise((resolve) => (setTimeout(resolve, 200))),
         semaphore: testSem,
         sqs
       });
@@ -805,10 +789,6 @@ describe('Consumer', () => {
       consumer.stop();
 
       assert.strictEqual(testSem.count, semaphoreCapacity, 'Expected semaphore count to be equal capacity');
-      assert.strictEqual(testSem.acquireCount, expectedAcquireCount, 'Expected acquire to be called ' + expectedAcquireCount + ' times');
-      assert.strictEqual(testSem.releaseCount, expectedReleaseCount, 'Expected release to be called ' + expectedReleaseCount + ' times');
-      assert.strictEqual(handleMessageCount, expectedHandleMessageCount, 'Expected handle message to be called ' + expectedHandleMessageCount + ' times');
-      assert.strictEqual(testSem.notReadyCount, expectesNotReadCount, 'Expected semaphore to be not read' + expectesNotReadCount + ' times');
     });
 
     it('extends visibility timeout for long running handler functions', async () => {
