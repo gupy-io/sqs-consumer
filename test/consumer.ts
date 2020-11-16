@@ -9,6 +9,44 @@ const sandbox = sinon.createSandbox();
 const AUTHENTICATION_ERROR_TIMEOUT = 20;
 const POLLING_TIMEOUT = 100;
 
+interface TestReleaser {
+  (): void;
+}
+
+interface TestResolveWithReleaser {
+  (value: [number, TestReleaser]): void;
+}
+
+const TestSemaphore = class {
+  public capacity: number;
+  public count: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+    this.count = 0;
+  }
+
+  private resolveReleaser(sem: any, resolve: TestResolveWithReleaser): void {
+    if (sem.count >= sem.capacity) {
+      setTimeout(sem.resolveReleaser, 5, sem, resolve);
+      return;
+    }
+
+    sem.count += 1;
+    function release() {
+      sem.count -= 1;
+    }
+
+    resolve([0, release]);
+  }
+
+  public acquire(): Promise<[number, TestReleaser]> {
+    return new Promise((resolve) => {
+      this.resolveReleaser(this, resolve);
+    });
+  }
+};
+
 function stubResolve(value?: any): any {
   return sandbox
     .stub()
@@ -41,6 +79,8 @@ describe('Consumer', () => {
   let clock;
   let handleMessage;
   let handleMessageBatch;
+  let semaphore;
+  let semaphoreRelease;
   let sqs;
   const response = {
     Messages: [{
@@ -54,6 +94,9 @@ describe('Consumer', () => {
     clock = sinon.useFakeTimers();
     handleMessage = sandbox.stub().resolves(null);
     handleMessageBatch = sandbox.stub().resolves(null);
+    semaphoreRelease = sandbox.stub().returns(null);
+    semaphore = sandbox.mock();
+    semaphore.acquire = sandbox.stub().resolves([0, semaphoreRelease]);
     sqs = sandbox.mock();
     sqs.receiveMessage = stubResolve(response);
     sqs.deleteMessage = stubResolve();
@@ -661,6 +704,91 @@ describe('Consumer', () => {
       sandbox.assert.callCount(handleMessageBatch, 1);
       sandbox.assert.callCount(handleMessage, 0);
 
+    });
+
+    it('uses semaphore when configured to', async () => {
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage,
+        semaphore,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'response_processed');
+      await pEvent(consumer, 'semaphore_release');
+      consumer.stop();
+
+      sandbox.assert.callCount(semaphore.acquire, 1);
+      sandbox.assert.callCount(handleMessage, 1);
+      sandbox.assert.callCount(semaphoreRelease, 1);
+    });
+
+    it('releases semaphore in failure cases', async () => {
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage: () => {
+          throw new Error('handle error');
+        },
+        semaphore,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'processing_error');
+      await pEvent(consumer, 'semaphore_release');
+      consumer.stop();
+
+      sandbox.assert.callCount(semaphore.acquire, 1);
+      sandbox.assert.callCount(semaphoreRelease, 1);
+    });
+
+    it('emits error if semaphore.acquire fails', async () => {
+      semaphore.acquire = sinon.stub().rejects('semaphore acquire error');
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage,
+        semaphore,
+        sqs
+      });
+
+      consumer.start();
+      await pEvent(consumer, 'error');
+      consumer.stop();
+
+      sandbox.assert.callCount(semaphore.acquire, 1);
+      sandbox.assert.callCount(semaphoreRelease, 0);
+      sandbox.assert.callCount(handleMessage, 0);
+    });
+
+    it('respects semaphore capacity', async () => {
+      const semaphoreCapacity = 5;
+      const testSem = new TestSemaphore(semaphoreCapacity);
+
+      consumer = new Consumer({
+        queueUrl: 'some-queue-url',
+        messageAttributeNames: ['attribute-1', 'attribute-2'],
+        region: 'some-region',
+        handleMessage: () => new Promise((resolve) => (setTimeout(resolve, 200))),
+        semaphore: testSem,
+        sqs
+      });
+
+      consumer.start();
+
+      for (let i = 0; i < 40; i += 1) {
+        await clock.tickAsync(15);
+      }
+
+      consumer.stop();
+
+      assert.strictEqual(testSem.count, semaphoreCapacity, 'Expected semaphore count to be equal capacity');
     });
 
     it('extends visibility timeout for long running handler functions', async () => {

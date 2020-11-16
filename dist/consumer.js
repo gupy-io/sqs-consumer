@@ -61,6 +61,7 @@ class Consumer extends events_1.EventEmitter {
         this.queueUrl = options.queueUrl;
         this.handleMessage = options.handleMessage;
         this.handleMessageBatch = options.handleMessageBatch;
+        this.semaphore = options.semaphore;
         this.handleMessageTimeout = options.handleMessageTimeout;
         this.attributeNames = options.attributeNames || [];
         this.messageAttributeNames = options.messageAttributeNames || [];
@@ -244,7 +245,7 @@ class Consumer extends events_1.EventEmitter {
             VisibilityTimeout: this.visibilityTimeout
         };
         let currentPollingTimeout = this.pollingWaitTimeMs;
-        this.receiveMessage(receiveParams)
+        const receiveAndHandleFlow = () => (this.receiveMessage(receiveParams)
             .then(this.handleSqsResponse)
             .catch((err) => {
             this.emit('error', err);
@@ -253,11 +254,34 @@ class Consumer extends events_1.EventEmitter {
                 currentPollingTimeout = this.authenticationErrorTimeout;
             }
             return;
-        }).then(() => {
-            setTimeout(this.poll, currentPollingTimeout);
-        }).catch((err) => {
-            this.emit('error', err);
-        });
+        }));
+        if (this.semaphore) {
+            this.semaphore.acquire()
+                .then(([, release]) => {
+                this.emit('semaphore_acquire');
+                setTimeout(this.poll, 0);
+                receiveAndHandleFlow()
+                    .then(() => {
+                    release();
+                    this.emit('semaphore_release');
+                })
+                    .catch((err) => {
+                    release();
+                    this.emit('semaphore_release');
+                    this.emit('error', err);
+                });
+            }).catch((err) => {
+                this.emit('error', err);
+            });
+        }
+        else {
+            receiveAndHandleFlow()
+                .then(() => {
+                setTimeout(this.poll, currentPollingTimeout);
+            }).catch((err) => {
+                this.emit('error', err);
+            });
+        }
     }
     async processMessageBatch(messages) {
         messages.forEach((message) => {

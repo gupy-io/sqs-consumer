@@ -73,6 +73,14 @@ function hasMessages(response: ReceieveMessageResponse): boolean {
   return response.Messages && response.Messages.length > 0;
 }
 
+interface Releaser {
+  (): void;
+}
+
+export interface Semaphore {
+  acquire: () => Promise<[number, Releaser]>;
+}
+
 export interface ConsumerOptions {
   queueUrl?: string;
   attributeNames?: string[];
@@ -90,12 +98,15 @@ export interface ConsumerOptions {
   handleMessageTimeout?: number;
   handleMessage?(message: SQSMessage, deleteMessage?: () => Promise<void>): Promise<void>;
   handleMessageBatch?(messages: SQSMessage[], deleteMessages?: () => Promise<void>): Promise<void>;
+  semaphore?: Semaphore;
   manualDelete?: boolean;
 }
 
 interface Events {
   'response_processed': [];
   'empty': [];
+  'semaphore_acquire': [];
+  'semaphore_release': [];
   'message_received': [SQSMessage];
   'message_processed': [SQSMessage];
   'error': [Error, void | SQSMessage | SQSMessage[]];
@@ -108,6 +119,7 @@ export class Consumer extends EventEmitter {
   private queueUrl: string;
   private handleMessage: (message: SQSMessage, deleteMessage?: () => Promise<void>) => Promise<void>;
   private handleMessageBatch: (message: SQSMessage[], deleteMessages?: () => Promise<void>) => Promise<void>;
+  private semaphore: Semaphore;
   private handleMessageTimeout: number;
   private attributeNames: string[];
   private messageAttributeNames: string[];
@@ -128,6 +140,7 @@ export class Consumer extends EventEmitter {
     this.queueUrl = options.queueUrl;
     this.handleMessage = options.handleMessage;
     this.handleMessageBatch = options.handleMessageBatch;
+    this.semaphore = options.semaphore;
     this.handleMessageTimeout = options.handleMessageTimeout;
     this.attributeNames = options.attributeNames || [];
     this.messageAttributeNames = options.messageAttributeNames || [];
@@ -322,20 +335,46 @@ export class Consumer extends EventEmitter {
     };
 
     let currentPollingTimeout = this.pollingWaitTimeMs;
-    this.receiveMessage(receiveParams)
-      .then(this.handleSqsResponse)
-      .catch((err) => {
-        this.emit('error', err);
-        if (isConnectionError(err)) {
-          debug('There was an authentication error. Pausing before retrying.');
-          currentPollingTimeout = this.authenticationErrorTimeout;
-        }
-        return;
-      }).then(() => {
-        setTimeout(this.poll, currentPollingTimeout);
-      }).catch((err) => {
-        this.emit('error', err);
-      });
+    const receiveAndHandleFlow = () => (
+      this.receiveMessage(receiveParams)
+        .then(this.handleSqsResponse)
+        .catch((err) => {
+          this.emit('error', err);
+          if (isConnectionError(err)) {
+            debug('There was an authentication error. Pausing before retrying.');
+            currentPollingTimeout = this.authenticationErrorTimeout;
+          }
+          return;
+        })
+    );
+
+    if (this.semaphore) {
+      this.semaphore.acquire()
+        .then(([, release]) => {
+          this.emit('semaphore_acquire');
+          setTimeout(this.poll, 0);
+          receiveAndHandleFlow()
+            .then(() => {
+              release();
+              this.emit('semaphore_release');
+            })
+            .catch((err) => {
+              release();
+              this.emit('semaphore_release');
+              this.emit('error', err);
+            });
+        }).catch((err)=> {
+          this.emit('error', err);
+        });
+    } else {
+      receiveAndHandleFlow()
+        .then(() => {
+          setTimeout(this.poll, currentPollingTimeout);
+        }).catch((err) => {
+          this.emit('error', err);
+        });
+    }
+
   }
 
   private async processMessageBatch(messages: SQSMessage[]): Promise<void> {
